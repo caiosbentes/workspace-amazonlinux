@@ -40,8 +40,10 @@ sudo yum -y install \
 sudo yum -y groupinstall "Development Tools" || true
 
 # ---------- 1. AWS CLI v2 ----------
-if ! have aws; then
-  log "Installing AWS CLI v2"
+# WorkSpaces AL2 ships AWS CLI v1 on Python 2.7. Check for v2 specifically so we
+# actually upgrade (v2 lands in /usr/local/bin and wins in PATH over the v1).
+if ! aws --version 2>&1 | grep -q 'aws-cli/2'; then
+  log "Installing AWS CLI v2 (upgrading any preinstalled v1)"
   case "$ARCH" in
     x86_64)  AWS_URL="https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" ;;
     aarch64) AWS_URL="https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" ;;
@@ -52,7 +54,7 @@ if ! have aws; then
   sudo "$tmp/aws/install" --update
   rm -rf "$tmp"
 else
-  log "AWS CLI already installed: $(aws --version 2>&1)"
+  log "AWS CLI v2 already installed: $(aws --version 2>&1)"
 fi
 
 # ---------- 2. Docker (via amazon-linux-extras on AL2, yum fallback) ----------
@@ -155,9 +157,11 @@ else
 fi
 
 # ---------- 9. VS Code ----------
+# AL2 ships glibc 2.26; VS Code >= 1.86 requires glibc 2.28 (Microsoft dropped
+# AL2/CentOS7/RHEL7 support in Jan 2024). Pin to 1.85.2, the last compatible build.
 if $INSTALL_GUI; then
   if ! have code; then
-    log "Installing VS Code"
+    log "Installing VS Code (pinned to 1.85.2 — last glibc-2.26 compatible build)"
     sudo rpm --import https://packages.microsoft.com/keys/microsoft.asc
     sudo tee /etc/yum.repos.d/vscode.repo >/dev/null <<'EOF'
 [code]
@@ -167,7 +171,12 @@ enabled=1
 gpgcheck=1
 gpgkey=https://packages.microsoft.com/keys/microsoft.asc
 EOF
-    sudo yum -y install code
+    # Do NOT let yum pull the latest (glibc 2.28) build.
+    if ! sudo yum -y install code-1.85.2; then
+      warn "Could not install code-1.85.2 via yum. Alternatives:"
+      warn "  - List available builds:  yum --showduplicates list code | grep 1.85"
+      warn "  - Or use VS Code Remote-SSH from your local machine into this host."
+    fi
   else
     log "VS Code already installed: $(code --version | head -1)"
   fi
@@ -176,11 +185,22 @@ else
 fi
 
 # ---------- summary ----------
+# Each tool reports its version differently; --version doesn't work for all.
+tool_version() {
+  case "$1" in
+    kubectl) kubectl version --client -o yaml 2>/dev/null | awk '/gitVersion/{print $2; exit}' ;;
+    helm)    helm version --short 2>/dev/null ;;
+    eksctl)  eksctl version 2>/dev/null ;;
+    ansible) ansible --version 2>/dev/null | head -1 ;;
+    *)       "$1" --version 2>/dev/null | head -1 ;;
+  esac
+}
+
 echo
 log "Setup complete. Installed versions:"
 for bin in aws docker kubectl helm terraform ansible eksctl yq code; do
   if have "$bin"; then
-    printf '   %-10s %s\n' "$bin" "$($bin --version 2>&1 | head -1)"
+    printf '   %-10s %s\n' "$bin" "$(tool_version "$bin")"
   fi
 done
 
