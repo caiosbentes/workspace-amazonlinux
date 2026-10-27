@@ -252,21 +252,37 @@ if [[ ! -x "$KAFKA_HOME/bin/kafka-topics.sh" ]]; then
   log "Installing Java (Amazon Corretto 17) and Kafka CLI $KAFKA_VERSION"
   sudo yum -y install java-17-amazon-corretto-headless
   tmp="$(mktemp -d)"
-  curl -fsSL "https://archive.apache.org/dist/kafka/${KAFKA_VERSION}/kafka_${KAFKA_SCALA}-${KAFKA_VERSION}.tgz" \
-    -o "$tmp/kafka.tgz"
-  sudo mkdir -p "$KAFKA_HOME"
-  sudo tar -xzf "$tmp/kafka.tgz" -C "$KAFKA_HOME" --strip-components=1
+  KAFKA_FILE="kafka_${KAFKA_SCALA}-${KAFKA_VERSION}.tgz"
+  # CDN first (fast, only recent versions), then the archive (slow, all versions)
+  for url in \
+    "https://dlcdn.apache.org/kafka/${KAFKA_VERSION}/${KAFKA_FILE}" \
+    "https://archive.apache.org/dist/kafka/${KAFKA_VERSION}/${KAFKA_FILE}"; do
+    log "Downloading $url"
+    if curl -fL --progress-bar --connect-timeout 15 --max-time 600 "$url" -o "$tmp/kafka.tgz"; then
+      break
+    fi
+    warn "Failed: $url"
+    rm -f "$tmp/kafka.tgz"
+  done
+
+  if [[ -s "$tmp/kafka.tgz" ]]; then
+    sudo mkdir -p "$KAFKA_HOME"
+    sudo tar -xzf "$tmp/kafka.tgz" -C "$KAFKA_HOME" --strip-components=1
+  else
+    warn "Kafka download failed, skipping Kafka CLI (use the msk-client EC2 via SSM instead)"
+  fi
   rm -rf "$tmp"
 else
   log "Kafka CLI already installed in $KAFKA_HOME"
 fi
 
 MSK_JAR="$KAFKA_HOME/libs/aws-msk-iam-auth-${MSK_IAM_AUTH_VERSION}-all.jar"
-if [[ ! -f "$MSK_JAR" ]]; then
+if [[ -d "$KAFKA_HOME/libs" && ! -f "$MSK_JAR" ]]; then
   log "Installing aws-msk-iam-auth $MSK_IAM_AUTH_VERSION"
-  sudo curl -fsSL \
+  sudo curl -fL --progress-bar --connect-timeout 15 --max-time 300 \
     "https://github.com/aws/aws-msk-iam-auth/releases/download/v${MSK_IAM_AUTH_VERSION}/aws-msk-iam-auth-${MSK_IAM_AUTH_VERSION}-all.jar" \
-    -o "$MSK_JAR"
+    -o "$MSK_JAR" \
+    || { warn "aws-msk-iam-auth download failed"; sudo rm -f "$MSK_JAR"; }
 fi
 
 if [[ ! -f "$HOME/kafka/client-iam.properties" ]]; then
